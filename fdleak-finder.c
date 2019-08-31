@@ -80,6 +80,7 @@ static char proc_name[PROCNAME_LEN];
 
 static pthread_mutex_t fd_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// 函数指针
 static int (*openp)(const char *pathname, int flags, mode_t mode);
 static int (*creatp)(const char *pathname, mode_t mode);
 static int (*dupp)(int oldfd);
@@ -296,7 +297,7 @@ int open(const char *pathname, int flags, ...)
 	mode = va_arg(ap, mode_t);
 
 	do_init();
-
+	// 如果该线程已在 hook，直接调用，避免等待 mutex 
 	if (thread_in_hook) {
 		result = openp(pathname, flags, mode);
 		goto end;
@@ -304,8 +305,10 @@ int open(const char *pathname, int flags, ...)
 
 	thread_in_hook = 1;
 
+	// 互斥访问
 	pthread_mutex_lock(&fd_mutex);
 
+	// 递归调用
 	/* Call resursively */
 	result = openp(pathname, flags, mode);
 	if (result >= 0) {
@@ -313,11 +316,12 @@ int open(const char *pathname, int flags, ...)
 		add_fd(result, caller, &bt);
 	}
 
+	// printf 可能会调用 malloc，所以也要进行保护
 	/* printf might call malloc, so protect it too. */
 	if (print_to_console)
 		fdl_printf("open(%p,%d,%d) returns %d\n",
 			pathname, flags, mode, result);
-
+	// 解锁
 	pthread_mutex_unlock(&fd_mutex);
 
 	thread_in_hook = 0;
@@ -832,6 +836,7 @@ void init_fd_tracking(void)
 		/*
 		 * Effect-less, but checks if FD exists.
 		 */
+		// 检查 fd 是否已经被打开了
 		result = dup2p(fd, fd);
 		if (result != fd)
 			continue;
