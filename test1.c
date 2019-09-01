@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include "redefine.h"
 
+
 void func(int a, double b) {
     int _a = a;
     double _b = b;

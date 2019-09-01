@@ -6,33 +6,23 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <malloc.h>
 #include "hlist.h"
 #include "jhash.h"
 
-#define malloc(size) _malloc(size, __FILE__, __LINE__, __func__)
-#define posix_memalign(memptr, alignment, size) _posix_memalign(memptr, alignment, size, __FILE__, __LINE__, __func__)
-// #define memalign(alignment, size) _memalign(alignment, size, __FILE__, __LINE__, __func__)
-#define realloc(ptr, size) _realloc(ptr, size, __FILE__, __LINE__, __func__)
-#define calloc(nmemb, size) _calloc(nmemb, size, __FILE__, __LINE__, __func__)
+#define callocp calloc
+#define mallocp malloc
+#define reallocp realloc
+#define memalignp memalign
+#define posix_memalignp posix_memalign
+#define freep free
 
-static volatile int print_to_console;
+#define PRINT_TO_CONSOLE 0 // 0/1 print/no print
 
 static pthread_mutex_t mh_mutex = PTHREAD_MUTEX_INITIALIZER;
-// 定义函数指针
-static void* (*callocp)(size_t, size_t);
-static void* (*mallocp)(size_t);
-static void* (*reallocp)(void*, size_t);
-static void* (*memalignp)(size_t, size_t);
-static int (*posix_memalignp)(void**, size_t, size_t);
-static void (*freep)(void*);
 
 static volatile int initialized; // 是否已初始化标志
 static __thread int thread_in_hook; // 用于多线程的 hook 标志，
-
-#define STATIC_CALLOC_LEN 4096
-static char static_calloc_buf[STATIC_CALLOC_LEN];
-static size_t static_calloc_len;
-static pthread_mutex_t static_calloc_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define MH_HASH_BITS 20 /* 1 M entries, hardcoded for now */
 #define MH_TABLE_SIZE (1 << MH_HASH_BITS)
@@ -87,8 +77,8 @@ add_mh(void* ptr, size_t alloc_size, const char* file, const int line, const cha
         return;
     hash = jhash(&ptr, sizeof(ptr), 0);
     head = &mh_table[hash & (MH_TABLE_SIZE - 1)];
-    cds_hlist_for_each_entry(e, node, head, hlist)
-    { // 遍历链表，检查 ptr 是否已在 hash 表中
+    cds_hlist_for_each_entry(e, node, head, hlist) // 遍历链表，检查 ptr 是否已在 hash 表中
+    {
         if (ptr == e->ptr) {
             fprintf(stderr, "[warning] add_mh pointer %p is already there\n",
                 ptr);
@@ -138,35 +128,7 @@ do_init(void)
     if (initialized)
         return;
 
-    callocp = calloc;
-    mallocp = malloc;
-    reallocp = realloc;
-    //memalignp = memalign;
-    posix_memalignp = posix_memalign;
-    freep = free;
-
-    print_to_console = 1; //设置是否打印函数调用
     initialized = 1;
-}
-
-/* 函数功能： 请求从已经预先分配的 4096 字节内存中分配内存，
-*  如果申请的内存大于剩余的内存，则不进行分配，返回 NULL，
-*  否则返回分配内存的首地址
-*/
-static void* static_calloc(size_t nmemb, size_t size)
-{
-    size_t prev_len;
-
-    pthread_mutex_lock(&static_calloc_mutex);
-    //
-    if (nmemb * size > sizeof(static_calloc_buf) - static_calloc_len) {
-        pthread_mutex_unlock(&static_calloc_mutex);
-        return NULL;
-    }
-    prev_len = static_calloc_len;
-    static_calloc_len += nmemb * size;
-    pthread_mutex_unlock(&static_calloc_mutex);
-    return &static_calloc_buf[prev_len];
 }
 
 /* 下面几个函数基本上是对原本申请/释放内存的函数的一个包装，基本结构如下
@@ -182,19 +144,14 @@ static void* static_calloc(size_t nmemb, size_t size)
 *  9 thread_in_hook 设置为 0
 *  10 返回 result
 */
-
 void* _calloc(size_t nmemb, size_t size, const char* file, const int line, const char* func)
 {
     void* result;
 
-    if (callocp == NULL) {
-        return static_calloc(nmemb, size);
-    }
-
     do_init();
 
     if (thread_in_hook) {
-        return callocp(nmemb, size);
+        return calloc(nmemb, size);
     }
 
     thread_in_hook = 1;
@@ -202,12 +159,12 @@ void* _calloc(size_t nmemb, size_t size, const char* file, const int line, const
     pthread_mutex_lock(&mh_mutex);
 
     /* Call resursively */
-    result = callocp(nmemb, size);
+    result = calloc(nmemb, size);
 
     add_mh(result, nmemb * size, file, line, func);
 
     /* printf might call malloc, so protect it too. */
-    if (print_to_console)
+    if (PRINT_TO_CONSOLE)
         fprintf(stderr, "calloc(%zu,%zu) returns %p\n", nmemb, size, result);
 
     pthread_mutex_unlock(&mh_mutex);
@@ -224,7 +181,7 @@ void* _malloc(size_t size, const char* file, const int line, const char* func)
     do_init();
 
     if (thread_in_hook) {
-        return mallocp(size);
+        return malloc(size);
     }
 
     thread_in_hook = 1;
@@ -232,12 +189,12 @@ void* _malloc(size_t size, const char* file, const int line, const char* func)
     pthread_mutex_lock(&mh_mutex);
 
     /* Call resursively */
-    result = mallocp(size);
+    result = malloc(size);
 
     add_mh(result, size, file, line, func);
 
     /* printf might call malloc, so protect it too. */
-    if (print_to_console)
+    if (PRINT_TO_CONSOLE)
         fprintf(stderr, "malloc(%zu) returns %p\n", size, result);
 
     pthread_mutex_unlock(&mh_mutex);
@@ -251,18 +208,10 @@ void* _realloc(void* ptr, size_t size, const char* file, const int line, const c
 {
     void* result;
 
-    /*
-	 * Return NULL if called on an address returned by
-	 * static_calloc(). TODO: mimick realloc behavior instead.
-	 */
-    if ((char*)ptr >= static_calloc_buf && (char*)ptr < static_calloc_buf + STATIC_CALLOC_LEN) {
-        return NULL;
-    }
-
     do_init();
 
     if (thread_in_hook) {
-        return reallocp(ptr, size);
+        return realloc(ptr, size);
     }
 
     thread_in_hook = 1;
@@ -270,7 +219,7 @@ void* _realloc(void* ptr, size_t size, const char* file, const int line, const c
     pthread_mutex_lock(&mh_mutex);
 
     /* Call resursively */
-    result = reallocp(ptr, size);
+    result = realloc(ptr, size);
 
     if (size == 0 && ptr) {
         /* equivalent to free() */
@@ -281,7 +230,7 @@ void* _realloc(void* ptr, size_t size, const char* file, const int line, const c
     }
 
     /* printf might call malloc, so protect it too. */
-    if (print_to_console)
+    if (PRINT_TO_CONSOLE)
         fprintf(stderr, "realloc(%p,%zu) returns %p\n", ptr, size, result);
 
     pthread_mutex_unlock(&mh_mutex);
@@ -298,7 +247,7 @@ void* _memalign(size_t alignment, size_t size, const char* file, const int line,
     do_init();
 
     if (thread_in_hook) {
-        return memalignp(alignment, size);
+        return memalign(alignment, size);
     }
 
     thread_in_hook = 1;
@@ -306,12 +255,12 @@ void* _memalign(size_t alignment, size_t size, const char* file, const int line,
     pthread_mutex_lock(&mh_mutex);
 
     /* Call resursively */
-    result = memalignp(alignment, size);
+    result = memalign(alignment, size);
 
     add_mh(result, size, file, line, func);
 
     /* printf might call malloc, so protect it too. */
-    if (print_to_console)
+    if (PRINT_TO_CONSOLE)
         fprintf(stderr, "memalign(%zu,%zu) returns %p\n",
             alignment, size, result);
 
@@ -329,7 +278,7 @@ int _posix_memalign(void** memptr, size_t alignment, size_t size, const char* fi
     do_init();
 
     if (thread_in_hook) {
-        return posix_memalignp(memptr, alignment, size);
+        return posix_memalign(memptr, alignment, size);
     }
 
     thread_in_hook = 1;
@@ -337,12 +286,12 @@ int _posix_memalign(void** memptr, size_t alignment, size_t size, const char* fi
     pthread_mutex_lock(&mh_mutex);
 
     /* Call resursively */
-    result = posix_memalignp(memptr, alignment, size);
+    result = posix_memalign(memptr, alignment, size);
 
     add_mh(*memptr, size, file, line, func);
 
     /* printf might call malloc, so protect it too. */
-    if (print_to_console)
+    if (PRINT_TO_CONSOLE)
         fprintf(stderr, "posix_memalign(%p,%zu,%zu) returns %d\n",
             memptr, alignment, size, result);
 
@@ -353,20 +302,12 @@ int _posix_memalign(void** memptr, size_t alignment, size_t size, const char* fi
     return result;
 }
 
-void _free(void* ptr)
+void _free(void* ptr, size_t useless)
 {
-    /*
-	 * Ensure that we skip memory allocated by static_calloc().
-	 */
-    // 确保我们跳过 static_calloc() 分配的内存。
-    if ((char*)ptr >= static_calloc_buf && (char*)ptr < static_calloc_buf + STATIC_CALLOC_LEN) {
-        return;
-    }
-
     do_init();
 
     if (thread_in_hook) {
-        freep(ptr);
+        free(ptr);
         return;
     }
 
@@ -374,12 +315,11 @@ void _free(void* ptr)
     pthread_mutex_lock(&mh_mutex);
 
     /* Call resursively */
-    freep(ptr);
+    free(ptr);
 
     del_mh(ptr);
 
-    /* printf might call free, so protect it too. */
-    if (print_to_console)
+    if (PRINT_TO_CONSOLE)
         fprintf(stderr, "freed pointer %p\n", ptr);
 
     pthread_mutex_unlock(&mh_mutex);
@@ -402,9 +342,16 @@ static __attribute__((destructor)) void print_leaks(void)
         head = &mh_table[i];
         cds_hlist_for_each_entry(e, node, head, hlist)
         {
-            fprintf(stderr, "[leak] file: %s line: %5d function: %s ptr: %p size: %zu\n",
+            fprintf(stderr, "[leak]\tfile: %s line: %d function: %s\n\tptr: %p size: %zu\n\n",
                 e->file, e->line, e->function, e->ptr,
                 e->alloc_size);
         }
     }
 }
+
+
+#define malloc(size) _malloc(size, __FILE__, __LINE__, __func__)
+#define posix_memalign(memptr, alignment, size) _posix_memalign(memptr, alignment, size, __FILE__, __LINE__, __func__)
+#define memalign(alignment, size) _memalign(alignment, size, __FILE__, __LINE__, __func__)
+#define realloc(ptr, size) _realloc(ptr, size, __FILE__, __LINE__, __func__)
+#define calloc(nmemb, size) _calloc(nmemb, size, __FILE__, __LINE__, __func__)
