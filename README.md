@@ -2,7 +2,7 @@
 
 ​		这个项目是一个适用于 C 项目的内存泄漏检查工具。
 
-原作者是 [https://github.com/efficios/memleak-finder](https://github.com/efficios/memleak-finder) 我对原作者的代码进行了部分注释，并仿照思路编写了 `memleak.c`工具。
+​     [原作者项目](https://github.com/efficios/memleak-finder) 我对原作者的代码进行了部分注释，并仿照思路编写了 `memleak.c`工具。
 
 ## 原理
 
@@ -26,7 +26,7 @@
 
 ​		`memleak-finder.c` 和 `fd-finder.c`使用的方法是 `LD_PRELOAD`。
 
-> `LD_PRELOAD` 是 Linux 系统的一个环境变量，它可以影响程序的运行时的链接（Runtime linker），它允许你定义在程序运行前优先加载的动态链接库。这个功能主要就是用来有选择性的载入不同动态链接库中的相同函数。通过这个环境变量，我们可以在主程序和其动态链接库的中间加载别的动态链接库，甚至覆盖正常的函数库。一方面，我们可以以此功能来使用自己的或是更好的函数（无需别人的源码），而另一方面，**我们也可以以向别人的程序注入程序，从而达到特定的目的**。[1]
+> `LD_PRELOAD` 是 Linux 系统的一个环境变量，它可以影响程序的运行时的链接（Runtime linker），它允许你定义在程序运行前优先加载的动态链接库。这个功能主要就是用来有选择性的载入不同动态链接库中的相同函数。通过这个环境变量，我们可以在主程序和其动态链接库的中间加载别的动态链接库，甚至覆盖正常的函数库。一方面，我们可以以此功能来使用自己的或是更好的函数（无需别人的源码），而另一方面，**我们也可以以向别人的程序注入程序，从而达到特定的目的**。[来源](https://www.cnblogs.com/net66/p/5609026.html)
 
 ​		`memleak-finder.c` 和 `fd-finder.c` 就是通过编写 `malloc`, `free` 等的同名函数来实现对原本的函数的替换。在被重写的函数中实现记录内存操作的功能，并通过使用函数指针调用系统动态库来实现 `malloc`, `free` 原本的功能。**这个方法可以实现对源代码的无侵入内存检测，即不需要对需要检测的代码实施任何的修改。**
 
@@ -42,9 +42,9 @@
 
 ## 使用
 
-假设我们需要检测内存泄漏的文件叫做 `test1.c`
+​    假设我们需要检测内存泄漏的文件叫做 `test1.c`
 
-`memleak-finder.c` 和 `fdleak-finder.c` 的使用，以`memleak-finder` 为例子：
+​    `memleak-finder.c` 和 `fdleak-finder.c` 的使用，以`memleak-finder` 为例子：
 
 ```bash
 # 编译项目
@@ -57,9 +57,9 @@ LD_PRELOAD=<path_to>/memleak-finder.so ./test.o
 [leak] ptr: 0x558779d03260 size: 4 caller: 0x55877843d16a <(null)>
 ```
 
-`memleak.h` 的使用：
+​    `memleak.h` 的使用：
 
-先在 `test.c` 文件头部加上 `#inclde "memleak.h"`
+​    先在 `test.c` 文件头部加上 `#inclde "memleak.h"`
 
 ```bash
 # 编译 test.c
@@ -80,8 +80,3 @@ free: 0
 ```
 
 想了解更多信息可访问原作者项目。
-
-## 参考
-
-
-
