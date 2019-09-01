@@ -30,7 +30,6 @@
 #include <stdlib.h>
 #include <assert.h>
 #include "hlist.h"
-
 #include "jhash.h"
 
 static volatile int print_to_console;
@@ -62,6 +61,9 @@ struct mh_entry {  // memory hash entry
 	const void *alloc_caller;
 	char *caller_symbol;
 	size_t alloc_size;
+	const char* file;
+	int line;
+	const char* function;
 };
 
 /*	函数功能：从 hash 表中查询元素
@@ -90,7 +92,7 @@ get_mh(const void *ptr)
 *  否则构造 hash 表元素，再将元素插入 hash 表中
 */
 static void
-add_mh(void *ptr, size_t alloc_size, const void *caller)
+add_mh(void *ptr, size_t alloc_size, const void *caller, const char *file, const int line, const char *func)
 {
 	struct cds_hlist_head *head;
 	struct cds_hlist_node *node;
@@ -113,6 +115,9 @@ add_mh(void *ptr, size_t alloc_size, const void *caller)
 	e->ptr = ptr;
 	e->alloc_caller = caller;
 	e->alloc_size = alloc_size;
+	e->file = file;
+	e->line = line;
+	e->function = func;
 	if (dladdr(caller, &info) && info.dli_sname) {
 		e->caller_symbol = strdup(info.dli_sname);
 	} else {
@@ -205,10 +210,11 @@ void *static_calloc(size_t nmemb, size_t size)
 */
 
 void *
-calloc(size_t nmemb, size_t size)
+_calloc(size_t nmemb, size_t size, const char* file, const int line, const char* func)
 {
 	void *result;
 	const void *caller = __builtin_return_address(0);
+	// const char *func_name = __func__;
 
 	if (callocp == NULL) {
 		return static_calloc(nmemb, size);
@@ -227,7 +233,7 @@ calloc(size_t nmemb, size_t size)
 	/* Call resursively */
 	result = callocp(nmemb, size);
 
-	add_mh(result, nmemb * size, caller);
+	add_mh(result, nmemb * size, caller, file, line, func);
 
 	/* printf might call malloc, so protect it too. */
 	if (print_to_console)
@@ -241,10 +247,11 @@ calloc(size_t nmemb, size_t size)
 }
 
 void *
-malloc(size_t size)
+_malloc(size_t size, const char* file, const int line, const char* func)
 {
 	void *result;
 	const void *caller = __builtin_return_address(0);
+	// const char *func_name = __func__;
 
 	do_init();
 
@@ -259,7 +266,7 @@ malloc(size_t size)
 	/* Call resursively */
 	result = mallocp(size);
 
-	add_mh(result, size, caller);
+	add_mh(result, size, caller, file, line, func);
 
 	/* printf might call malloc, so protect it too. */
 	if (print_to_console)
@@ -273,10 +280,11 @@ malloc(size_t size)
 }
 
 void *
-realloc(void *ptr, size_t size)
+_realloc(void *ptr, size_t size, const char* file, const int line, const char* func)
 {
 	void *result;
 	const void *caller = __builtin_return_address(0);
+	// const char *func_name = __func__;
 
 	/*
 	 * Return NULL if called on an address returned by
@@ -305,7 +313,7 @@ realloc(void *ptr, size_t size)
 		del_mh(ptr, caller);
 	} else if (result) {
 		del_mh(ptr, caller);
-		add_mh(result, size, caller);
+		add_mh(result, size, caller, file, line, func);
 	}
 
 	/* printf might call malloc, so protect it too. */
@@ -320,10 +328,11 @@ realloc(void *ptr, size_t size)
 }
 
 void *
-memalign(size_t alignment, size_t size)
+_memalign(size_t alignment, size_t size, const char* file, const int line, const char* func)
 {
 	void *result;
 	const void *caller = __builtin_return_address(0);
+	// const char *func_name = __func__;
 
 	do_init();
 
@@ -338,7 +347,7 @@ memalign(size_t alignment, size_t size)
 	/* Call resursively */
 	result = memalignp(alignment, size);
 
-	add_mh(result, size, caller);
+	add_mh(result, size, caller, file, line, func);
 
 	/* printf might call malloc, so protect it too. */
 	if (print_to_console)
@@ -353,10 +362,11 @@ memalign(size_t alignment, size_t size)
 }
 
 int
-posix_memalign(void **memptr, size_t alignment, size_t size)
+_posix_memalign(void **memptr, size_t alignment, size_t size, const char* file, const int line, const char* func)
 {
 	int result;
 	const void *caller = __builtin_return_address(0);
+	// const char *func_name = __func__;
 
 	do_init();
 
@@ -371,7 +381,7 @@ posix_memalign(void **memptr, size_t alignment, size_t size)
 	/* Call resursively */
 	result = posix_memalignp(memptr, alignment, size);
 
-	add_mh(*memptr, size, caller);
+	add_mh(*memptr, size, caller, file, line, func);
 
 	/* printf might call malloc, so protect it too. */
 	if (print_to_console)
@@ -438,9 +448,9 @@ void print_leaks(void)
 
 		head = &mh_table[i];
 		cds_hlist_for_each_entry(e, node, head, hlist) {
-			fprintf(stderr, "[leak] ptr: %p size: %zu caller: %p <%s>\n",
-				e->ptr, e->alloc_size, e->alloc_caller,
-				e->caller_symbol);
+			fprintf(stderr, "[leak] file: %s line: %5d function: %s ptr: %p size: %zu caller: %p <%s>\n",
+				e->file, e->line, e->function, e->ptr,
+				e->alloc_size, e->alloc_caller, e->caller_symbol);
 		}
 	}
 }
