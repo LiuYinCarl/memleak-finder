@@ -30,6 +30,24 @@ static struct cds_hlist_head mh_table[MH_TABLE_SIZE]; // 哈希表
 
 void* _malloc(size_t size, const char* file, const int line, const char* func);
 
+struct call_counter {
+    size_t calloc_cnt;
+    size_t malloc_cnt;
+    size_t realloc_cnt;
+    size_t memalign_cnt;
+    size_t posix_memalign_cnt;
+    size_t free_cnt;
+};
+
+struct call_counter counter = {
+    .calloc_cnt = 0,
+    .malloc_cnt = 0,
+    .realloc_cnt = 0,
+    .memalign_cnt = 0,
+    .posix_memalign_cnt = 0,
+    .free_cnt = 0
+};
+
 struct mh_entry { // memory hash entry
     struct cds_hlist_node hlist;
     void* ptr;
@@ -85,7 +103,8 @@ add_mh(void* ptr, size_t alloc_size, const char* file, const int line, const cha
             //assert(0);	/* already there */
         }
     }
-    e = _malloc(sizeof(*e), __FILE__, __LINE__, __func__); // 开辟一个 mh_entry
+    // todo 选择这个 malloc 是否需要记录
+    e = malloc(sizeof(*e)); // 开辟一个 mh_entry
     e->ptr = ptr;
     e->alloc_size = alloc_size;
     e->file = file;
@@ -123,7 +142,7 @@ del_mh(void* ptr)
 static void __attribute__((constructor))
 do_init(void)
 {
-    char* env;
+    // char* env;
 
     if (initialized)
         return;
@@ -151,6 +170,7 @@ void* _calloc(size_t nmemb, size_t size, const char* file, const int line, const
     do_init();
 
     if (thread_in_hook) {
+        counter.calloc_cnt += 1;
         return calloc(nmemb, size);
     }
 
@@ -160,7 +180,7 @@ void* _calloc(size_t nmemb, size_t size, const char* file, const int line, const
 
     /* Call resursively */
     result = calloc(nmemb, size);
-
+    counter.calloc_cnt += 1;
     add_mh(result, nmemb * size, file, line, func);
 
     /* printf might call malloc, so protect it too. */
@@ -181,6 +201,7 @@ void* _malloc(size_t size, const char* file, const int line, const char* func)
     do_init();
 
     if (thread_in_hook) {
+        counter.malloc_cnt += 1;
         return malloc(size);
     }
 
@@ -190,6 +211,7 @@ void* _malloc(size_t size, const char* file, const int line, const char* func)
 
     /* Call resursively */
     result = malloc(size);
+    counter.malloc_cnt += 1;
 
     add_mh(result, size, file, line, func);
 
@@ -211,6 +233,7 @@ void* _realloc(void* ptr, size_t size, const char* file, const int line, const c
     do_init();
 
     if (thread_in_hook) {
+        counter.realloc_cnt += 1;
         return realloc(ptr, size);
     }
 
@@ -220,6 +243,7 @@ void* _realloc(void* ptr, size_t size, const char* file, const int line, const c
 
     /* Call resursively */
     result = realloc(ptr, size);
+    counter.realloc_cnt += 1;
 
     if (size == 0 && ptr) {
         /* equivalent to free() */
@@ -247,6 +271,7 @@ void* _memalign(size_t alignment, size_t size, const char* file, const int line,
     do_init();
 
     if (thread_in_hook) {
+        counter.memalign_cnt += 1;
         return memalign(alignment, size);
     }
 
@@ -256,6 +281,7 @@ void* _memalign(size_t alignment, size_t size, const char* file, const int line,
 
     /* Call resursively */
     result = memalign(alignment, size);
+    counter.memalign_cnt += 1;
 
     add_mh(result, size, file, line, func);
 
@@ -278,6 +304,7 @@ int _posix_memalign(void** memptr, size_t alignment, size_t size, const char* fi
     do_init();
 
     if (thread_in_hook) {
+        counter.posix_memalign_cnt += 1;
         return posix_memalign(memptr, alignment, size);
     }
 
@@ -287,6 +314,7 @@ int _posix_memalign(void** memptr, size_t alignment, size_t size, const char* fi
 
     /* Call resursively */
     result = posix_memalign(memptr, alignment, size);
+    counter.posix_memalign_cnt += 1;
 
     add_mh(*memptr, size, file, line, func);
 
@@ -302,11 +330,12 @@ int _posix_memalign(void** memptr, size_t alignment, size_t size, const char* fi
     return result;
 }
 
-void _free(void* ptr, size_t useless)
+void _free(void* ptr)
 {
     do_init();
 
     if (thread_in_hook) {
+        counter.free_cnt += 1;
         free(ptr);
         return;
     }
@@ -316,6 +345,7 @@ void _free(void* ptr, size_t useless)
 
     /* Call resursively */
     free(ptr);
+    counter.free_cnt += 1;
 
     del_mh(ptr);
 
@@ -347,11 +377,14 @@ static __attribute__((destructor)) void print_leaks(void)
                 e->alloc_size);
         }
     }
+    fprintf(stderr, "[Function called information(times)]\ncalloc: %d\nmalloc: %d\nrealloc: %d\nmemalign: %d\nposix_memalign: %d\nfree: %d\n",
+        counter.calloc_cnt, counter.malloc_cnt, counter.realloc_cnt,
+        counter.memalign_cnt, counter.posix_memalign_cnt, counter.free_cnt);
 }
-
 
 #define malloc(size) _malloc(size, __FILE__, __LINE__, __func__)
 #define posix_memalign(memptr, alignment, size) _posix_memalign(memptr, alignment, size, __FILE__, __LINE__, __func__)
 #define memalign(alignment, size) _memalign(alignment, size, __FILE__, __LINE__, __func__)
 #define realloc(ptr, size) _realloc(ptr, size, __FILE__, __LINE__, __func__)
 #define calloc(nmemb, size) _calloc(nmemb, size, __FILE__, __LINE__, __func__)
+#define free(ptr) _free(ptr)
