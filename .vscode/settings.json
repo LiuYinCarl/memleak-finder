@@ -1,5 +1,6 @@
 {
     "files.associations": {
-        "memleak.h": "c"
+        "memleak.h": "c",
+        "new": "cpp"
     }
 }

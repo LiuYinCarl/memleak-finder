@@ -10,25 +10,47 @@
 #include "hlist.h"
 #include "jhash.h"
 
-#define callocp calloc
-#define mallocp malloc
-#define reallocp realloc
-#define memalignp memalign
-#define posix_memalignp posix_memalign
-#define freep free
-
-#define PRINT_TO_CONSOLE 0 // 0/1 print/no print
+#define MEMLEAK_FOR_CPP // cpp 编译选项, 编译 C 项目时注释掉
+#define PRINT_TO_CONSOLE 1 // 0/1 是否打印内存申请释放信息
 
 static pthread_mutex_t mh_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static volatile int initialized; // 是否已初始化标志
-static __thread int thread_in_hook; // 用于多线程的 hook 标志，
+static __thread int thread_in_hook = 0; // 用于多线程的 hook 标志，
 
 #define MH_HASH_BITS 20 /* 1 M entries, hardcoded for now */
 #define MH_TABLE_SIZE (1 << MH_HASH_BITS)
 static struct cds_hlist_head mh_table[MH_TABLE_SIZE]; // 哈希表
 
 void* _malloc(size_t size, const char* file, const int line, const char* func);
+
+#ifdef MEMLEAK_FOR_CPP
+
+struct call_counter {
+    size_t calloc_cnt;
+    size_t malloc_cnt;
+    size_t realloc_cnt;
+    size_t memalign_cnt;
+    size_t posix_memalign_cnt;
+    size_t free_cnt;
+    size_t new_cnt;
+    size_t new_array_cnt;
+    size_t delete_cnt;
+    size_t delete_array_cnt;
+};
+
+struct call_counter counter = {
+    .calloc_cnt = 0,
+    .malloc_cnt = 0,
+    .realloc_cnt = 0,
+    .memalign_cnt = 0,
+    .posix_memalign_cnt = 0,
+    .free_cnt = 0,
+    .new_cnt = 0,
+    .new_array_cnt = 0,
+    .delete_cnt = 0,
+    .delete_array_cnt = 0
+};
+
+#else
 
 struct call_counter {
     size_t calloc_cnt;
@@ -45,9 +67,12 @@ struct call_counter counter = {
     .realloc_cnt = 0,
     .memalign_cnt = 0,
     .posix_memalign_cnt = 0,
-    .free_cnt = 0
+    .free_cnt = 0,
 };
 
+#endif
+
+// hash 表节点
 struct mh_entry { // memory hash entry
     struct cds_hlist_node hlist;
     void* ptr;
@@ -104,7 +129,7 @@ add_mh(void* ptr, size_t alloc_size, const char* file, const int line, const cha
         }
     }
     // todo 选择这个 malloc 是否需要记录
-    e = malloc(sizeof(*e)); // 开辟一个 mh_entry
+    e = (struct mh_entry*)malloc(sizeof(*e)); // 开辟一个 mh_entry
     e->ptr = ptr;
     e->alloc_size = alloc_size;
     e->file = file;
@@ -136,20 +161,6 @@ del_mh(void* ptr)
     free(e);
 }
 
-/* 函数功能：初始化
-*  定义函数指针，根据环境变量设置全局参数
-*/
-static void __attribute__((constructor))
-do_init(void)
-{
-    // char* env;
-
-    if (initialized)
-        return;
-
-    initialized = 1;
-}
-
 /* 下面几个函数基本上是对原本申请/释放内存的函数的一个包装，基本结构如下
 *  1 获取当前函数返回地址
 *  2 执行 do_init() 初始化
@@ -166,8 +177,6 @@ do_init(void)
 void* _calloc(size_t nmemb, size_t size, const char* file, const int line, const char* func)
 {
     void* result;
-
-    do_init();
 
     if (thread_in_hook) {
         counter.calloc_cnt += 1;
@@ -198,8 +207,6 @@ void* _malloc(size_t size, const char* file, const int line, const char* func)
 {
     void* result;
 
-    do_init();
-
     if (thread_in_hook) {
         counter.malloc_cnt += 1;
         return malloc(size);
@@ -229,8 +236,6 @@ void* _malloc(size_t size, const char* file, const int line, const char* func)
 void* _realloc(void* ptr, size_t size, const char* file, const int line, const char* func)
 {
     void* result;
-
-    do_init();
 
     if (thread_in_hook) {
         counter.realloc_cnt += 1;
@@ -268,8 +273,6 @@ void* _memalign(size_t alignment, size_t size, const char* file, const int line,
 {
     void* result;
 
-    do_init();
-
     if (thread_in_hook) {
         counter.memalign_cnt += 1;
         return memalign(alignment, size);
@@ -301,8 +304,6 @@ int _posix_memalign(void** memptr, size_t alignment, size_t size, const char* fi
 {
     int result;
 
-    do_init();
-
     if (thread_in_hook) {
         counter.posix_memalign_cnt += 1;
         return posix_memalign(memptr, alignment, size);
@@ -332,8 +333,6 @@ int _posix_memalign(void** memptr, size_t alignment, size_t size, const char* fi
 
 void _free(void* ptr)
 {
-    do_init();
-
     if (thread_in_hook) {
         counter.free_cnt += 1;
         free(ptr);
@@ -377,10 +376,213 @@ static __attribute__((destructor)) void print_leaks(void)
                 e->alloc_size);
         }
     }
+
+#ifdef MEMLEAK_FOR_CPP
+    fprintf(stderr, "[Function called information(times)]\ncalloc: %d\nmalloc: %d\nrealloc: %d\nmemalign: %d\nposix_memalign: %d\nfree: %d\nnew: %d\nnew[]: %d\ndelete: %d\ndelete[]: %d\n",
+        counter.calloc_cnt, counter.malloc_cnt, counter.realloc_cnt,
+        counter.memalign_cnt, counter.posix_memalign_cnt, counter.free_cnt,
+        counter.new_cnt, counter.new_array_cnt, counter.delete_cnt, counter.delete_array_cnt);
+#else
     fprintf(stderr, "[Function called information(times)]\ncalloc: %d\nmalloc: %d\nrealloc: %d\nmemalign: %d\nposix_memalign: %d\nfree: %d\n",
         counter.calloc_cnt, counter.malloc_cnt, counter.realloc_cnt,
         counter.memalign_cnt, counter.posix_memalign_cnt, counter.free_cnt);
+
+#endif
 }
+
+#ifdef MEMLEAK_FOR_CPP
+#include <exception>
+
+struct call_recorder {
+    const char* file;
+    int line;
+
+    call_recorder(const char* _file, int _line)
+        : file(_file)
+        , line(_line)
+    {
+    }
+};
+
+template <typename T>
+inline T* operator*(const call_recorder& caller, T* ptr)
+{
+    if (thread_in_hook) {
+        return ptr;
+    }
+
+    thread_in_hook = 1;
+
+    pthread_mutex_lock(&mh_mutex);
+
+    struct mh_entry* e;
+
+    if (!ptr)
+        return NULL;
+
+    e = get_mh(ptr);
+
+    // todo:下面是直接修改内存地址的代码，但这是一个非常不好的做法，
+    // 但我现在没有能够想出任何其他的方法。
+    // 在使用 new[] 的时候，如果使用的是内置类型, 如
+    //      int* p = new int[10];
+    // 那么 new() 申请内存返回的地址会和 new 返回的地址一致，
+    // 但是如果不是内置类型，如：
+    //      string* p = new string[10];
+    // new() 申请内存返回的地址会比 new 返回的地址小 8
+    // 具体原因还不清楚
+    if (!e) {
+#define ll long long
+        ll tmp_ptr = (ll)ptr;
+        tmp_ptr -= 8;
+        void* _ptr = (void*)tmp_ptr;
+        e = get_mh(_ptr);
+    }
+
+    if (!e) {
+        fprintf(stderr,
+            "[warning] trying to init info into unallocated ptr block %p\n",
+            ptr);
+        return NULL;
+    }
+    // 添加 call_recorder 信息到节点
+    e->file = caller.file;
+    e->line = caller.line;
+
+    thread_in_hook = 0;
+
+    return ptr;
+}
+
+void* operator new(size_t size)
+{
+    void* result;
+
+    if (thread_in_hook) {
+        counter.new_cnt += 1;
+        result = malloc(size);
+        if (result == NULL)
+            throw std::bad_alloc();
+        return result;
+    }
+
+    thread_in_hook = 1;
+
+    pthread_mutex_lock(&mh_mutex);
+
+    result = malloc(size);
+    counter.new_cnt += 1;
+
+    if (result == NULL)
+        throw std::bad_alloc();
+
+    //init mh_entry info
+    const char* file = "blank file";
+    int line = 0;
+    const char* func = "new";
+
+    add_mh(result, size, file, line, func);
+
+    if (PRINT_TO_CONSOLE)
+        fprintf(stderr, "new(%zu) returns %p\n", size, result);
+
+    pthread_mutex_unlock(&mh_mutex);
+
+    thread_in_hook = 0;
+
+    return result;
+}
+
+void* operator new[](size_t size)
+{
+    void* result;
+
+    if (thread_in_hook) {
+        counter.new_array_cnt += 1;
+        result = malloc(size);
+        if (result == NULL)
+            throw std::bad_alloc();
+        return result;
+    }
+
+    thread_in_hook = 1;
+
+    pthread_mutex_lock(&mh_mutex);
+
+    result = malloc(size);
+    counter.new_array_cnt += 1;
+
+    if (result == NULL)
+        throw std::bad_alloc();
+
+    //init mh_entry info
+    const char* file = "blank file";
+    int line = 0;
+    const char* func = "new[]";
+
+    add_mh(result, size, file, line, func);
+
+    if (PRINT_TO_CONSOLE)
+        fprintf(stderr, "new[](%zu) returns %p\n", size, result);
+
+    pthread_mutex_unlock(&mh_mutex);
+
+    thread_in_hook = 0;
+
+    return result;
+}
+
+void operator delete(void* ptr)
+{
+    if (thread_in_hook) {
+        counter.delete_cnt += 1;
+        free(ptr);
+        return;
+    }
+
+    thread_in_hook = 1;
+    pthread_mutex_lock(&mh_mutex);
+
+    /* Call resursively */
+    free(ptr);
+    counter.delete_cnt += 1;
+
+    del_mh(ptr);
+
+    if (PRINT_TO_CONSOLE)
+        fprintf(stderr, "delete pointer %p\n", ptr);
+
+    pthread_mutex_unlock(&mh_mutex);
+    thread_in_hook = 0;
+}
+
+void operator delete[](void* ptr)
+{
+    if (thread_in_hook) {
+        counter.delete_array_cnt += 1;
+        free(ptr);
+        return;
+    }
+
+    thread_in_hook = 1;
+    pthread_mutex_lock(&mh_mutex);
+
+    /* Call resursively */
+    free(ptr);
+    counter.delete_array_cnt += 1;
+
+    del_mh(ptr);
+
+    if (PRINT_TO_CONSOLE)
+        fprintf(stderr, "delete[] pointer %p\n", ptr);
+
+    pthread_mutex_unlock(&mh_mutex);
+    thread_in_hook = 0;
+}
+
+#define new call_recorder(__FILE__, __LINE__) * new
+
+#endif // MEMLEAK_FOR_CPP
 
 #define malloc(size) _malloc(size, __FILE__, __LINE__, __func__)
 #define posix_memalign(memptr, alignment, size) _posix_memalign(memptr, alignment, size, __FILE__, __LINE__, __func__)
